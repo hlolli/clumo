@@ -1,0 +1,373 @@
+/* @flow */
+
+import v8 from 'v8';
+import { BasicParser as GOParser } from 'posix-getopt';
+import startClojureScriptEngine from './cljs';
+import printLegal from './legal';
+import * as lumo from './lumo';
+import * as util from './util';
+import lumoVersion from './version';
+
+type ScriptsType = [string, string][];
+
+export type CLIOptsType = {
+  verbose: boolean,
+  help: boolean,
+  unrecognized: boolean,
+  version: boolean,
+  'dump-sdk'?: string,
+  'local-repo'?: string,
+  dependencies: string[],
+  repl: boolean,
+  'auto-cache'?: boolean,
+  quiet: boolean,
+  'dumb-terminal': boolean,
+  'static-fns': boolean,
+  'fn-invoke-direct': boolean,
+  legal: boolean,
+  'elide-asserts': boolean,
+  'checked-arrays'?: string,
+  cache?: string,
+  classpath: string[],
+  'socket-repl'?: string,
+  mainNsName?: string,
+  mainScript?: string,
+  scripts: ScriptsType,
+  args: string[],
+};
+
+export function createBanner(): string {
+  // $FlowFixMe: we know for sure this file will exist.
+  return `Lumo ${lumoVersion}
+ClojureScript ${lumo.load('clojurescript-version')}
+Node.js ${process.version}
+ Docs: (doc function-name-here)
+       (find-doc "part-of-name-here")
+ Source: (source function-name-here)
+ Exit: Control+D or :cljs/quit or exit
+
+`;
+}
+
+function printBanner(): void {
+  process.stdout.write(createBanner());
+}
+
+function printVersion(): void {
+  process.stdout.write(`${lumoVersion}\n`);
+}
+
+function printHelp(): void {
+  process.stdout.write(
+    `Lumo ${lumoVersion}
+Usage:  lumo [init-opt*] [main-opt] [arg*]
+
+  With no options or args, runs an interactive Read-Eval-Print Loop
+
+  init options:
+    -i, --init path              Load a file or resource
+    -e, --eval string            Evaluate expressions in string; print
+                                 non-nil values
+    -c cp, --classpath cp        Use colon-delimited cp (semi-colon-delimited on
+                                 Windows) for source directories and JARs
+    -D dep, --dependencies dep   Use comma-separated list of dependencies to
+                                 look for in the local Maven repository.
+                                 Dependencies should be specified in the form
+                                 \`SYM:VERSION\` (e.g.: foo/bar:1.2.3).
+    -L path, --local-repo path   Path to the local Maven repository where Lumo
+                                 will look for dependencies. Defaults to
+                                 \`~/.m2/repository\`.
+    -K, --auto-cache             Create and use .lumo_cache dir for cache
+    -k, --cache path             If dir exists at path, use it for cache
+    -q, --quiet                  Quiet mode; doesn't print the banner
+    -v, --verbose                Emit verbose diagnostic output
+    -d, --dumb-terminal          Disable line editing / VT100 terminal
+                                 control
+    -s, --static-fns             Generate static dispatch function calls
+    -f, --fn-invoke-direct       Do not not generate \`.call(null...)\` calls
+                                 for unknown functions, but instead direct
+                                 invokes via \`f(a0,a1...)\`.
+    -A x, --checked-arrays x     Enables checked arrays where x is either warn
+                                 or error.
+    -n opts, --socket-repl x     Enable a socket REPL where x is port, IP:port
+                                 or JSON of the following form, where port is
+                                 required:
+                                 {"host":   "localhost",
+                                  "port":   12345,
+                                  "accept": "some.namespaced.clojure/fn",
+                                  "args":   ["args", {"for": "the accept fn"}]}
+
+  main options:
+    -m ns-name, --main=ns-name   Call the -main function from a namespace
+                                 with args
+    -r, --repl                   Run a repl
+    path                         Run a script from a file or resource
+    -                            Run a script from standard input
+    -h, -?, --help               Print this help message and exit
+    -l, --legal                  Show legal info (licenses and copyrights)
+
+  The init options may be repeated and mixed freely, but must appear before
+  any main option.
+
+  Paths may be absolute or relative in the filesystem.
+`,
+  );
+}
+
+function getRequires(txt) {
+  var require_regex = /[;]?\s?\(\s?require\s+[^)]+\)/g;
+  var require_macros_regex = /[;]?\s?\(\s?require-macros\s+[^)]+\)/g;
+  var reqs = [];
+  var result;
+  while ((result = require_regex.exec(txt)) ) {
+    reqs.push(result[0]);
+  }
+  while ((result = require_macros_regex.exec(txt)) ) {
+    reqs.push(result[0]);
+  }
+  var out_txt = reqs.reduce((i,v)=> i.replace(v, ''), txt.toString());
+  return [reqs.join('\n'), out_txt];
+}
+
+
+function getCLIOpts(): CLIOptsType {
+  var argv = process.argv.slice(2);
+  const csoundIn  = argv[argv.length - 2];
+  const csoundOut = argv[argv.length - 1];
+  // console.log('0 ', argv[0], '1',argv[1],'2',argv[2],'3',argv[3]);
+  if(argv[3] != '-sfdk') {
+  argv = argv.slice(0, -2);
+  } 
+  const argc = argv.length;
+  const optstr = [
+    'h(help)?',
+    'q(quiet)',
+    'l(legal)',
+    'i:(init)',
+    'e:(eval)',
+    'c:(classpath)',
+    'v(verbose)',
+    'd(dumb-terminal)',
+    'n:(socket-repl)',
+    's(static-fns)',
+    'f(fn-invoke-direct)',
+    'a(elide-asserts)',
+    'A:(checked-arrays)',
+    'm:(main)',
+    'r(repl)',
+    'k:(cache)',
+    'K(auto-cache)',
+    'V(version)',
+    'L:(local-repo)',
+    'D:(dependencies)',
+    // undocumented
+    'S:(dump-sdk)',
+  ].join('');
+
+  const parser = new GOParser(optstr, argv, 0);
+  const ret: CLIOptsType = {
+    scripts: [],
+    classpath: [],
+    dependencies: [],
+    unrecognized: false,
+    help: false,
+    version: false,
+    legal: false,
+    repl: false,
+    verbose: false,
+    'dumb-terminal': false,
+    'static-fns': false,
+    'fn-invoke-direct': false,
+    'elide-asserts': false,
+    quiet: false,
+    args: [],
+  };
+  let foundMainOpt = false;
+  
+  if (argv[3] != '-sfdk') {
+  var csoundTmpFile = fs.readFileSync(csoundIn);
+  var processedCsound = getRequires(csoundTmpFile);
+  var csoundRequires = processedCsound[0];
+  var csoundBody     = processedCsound[1];
+  csoundTmpFile = `(require 'lumo.io) ${csoundRequires} 
+  (lumo.io/spit "${csoundOut}" (do ${csoundBody}))`;
+  ret.scripts.push(['text', csoundTmpFile]);
+  }
+  
+  while (!foundMainOpt) {
+    const option = parser.getopt();
+    if (option == null) {
+      break;
+    }
+
+    switch (option.option) {
+      case '?':
+        foundMainOpt = true;
+        ret.help = true;
+        ret.unrecognized = option.optopt != null;
+        break;
+      case 'h':
+        foundMainOpt = true;
+        ret.help = true;
+        break;
+      case 'V':
+        foundMainOpt = true;
+        ret.version = true;
+        break;
+      case 'S':
+        foundMainOpt = true;
+        ret['dump-sdk'] = option.optarg;
+        break;
+      case 'q':
+        ret.quiet = true;
+        break;
+      case 'l':
+        foundMainOpt = true;
+        ret.legal = true;
+        break;
+      case 'i':
+        ret.scripts.push(['path', option.optarg]);
+        break;
+      case 'e':
+        ret.scripts.push(['text', option.optarg]);
+        break;
+      case 'c':
+        ret.classpath.push(option.optarg);
+        break;
+      case 'D':
+        ret.dependencies.push(option.optarg);
+        break;
+      case 'L':
+        ret['local-repo'] = option.optarg;
+        break;
+      case 'v':
+        ret.verbose = true;
+        break;
+      case 'd':
+        ret['dumb-terminal'] = true;
+        break;
+      case 'n':
+        ret['socket-repl'] = option.optarg;
+        break;
+      case 's':
+        ret['static-fns'] = true;
+        break;
+      case 'f':
+        ret['fn-invoke-direct'] = true;
+        break;
+      case 'a':
+        ret['elide-asserts'] = true;
+        break;
+      case 'A':
+        ret['checked-arrays'] = option.optarg;
+        break;
+      case 'm':
+        foundMainOpt = true;
+        ret.mainNsName = option.optarg;
+        break;
+      case 'r':
+        foundMainOpt = true;
+        ret.repl = true;
+        break;
+      case 'k':
+        ret.cache = option.optarg;
+        break;
+      case 'K':
+        ret['auto-cache'] = true;
+        break;
+      default:
+        break;
+    }
+  }
+
+  const optind = parser.optind();
+  if (!foundMainOpt && optind < argc) {
+    ret.mainScript = argv[optind];
+    ret.args = argv.slice(optind + 1);
+  } else {
+    ret.args = argv.slice(optind);
+  }
+
+  return ret;
+}
+
+function startCLI(): mixed {
+  const opts = getCLIOpts();
+  const {
+    args,
+    cache,
+    classpath,
+    dependencies,
+    unrecognized,
+    help,
+    legal,
+    mainNsName,
+    mainScript,
+    quiet,
+    scripts,
+    version,
+  } = opts;
+  const autoCache = opts['auto-cache'];
+  const localRepo = opts['local-repo'];
+  const dumpSDK = opts['dump-sdk'];
+
+  // if help, print help and bail
+  if (help) {
+    printHelp();
+    return process.exit(unrecognized ? 1 : 0);
+  }
+
+  if (version) {
+    return printVersion();
+  }
+
+  if (legal) {
+    return printLegal();
+  }
+
+  if (dumpSDK != null) {
+    return lumo.dumpSDK(dumpSDK);
+  }
+
+  v8.setFlagsFromString('--use_strict');
+
+  if (scripts.length === 0 && !mainNsName && !mainScript && args.length === 0) {
+    opts.repl = true;
+  }
+
+  if (cache || autoCache) {
+    const cachePath = cache || '.lumo_cache';
+    util.ensureDir(cachePath);
+
+    opts.cache = cachePath;
+  }
+
+  // TODO: print classpath to stdout if `:verbose`
+  if (classpath.length !== 0) {
+    // if (verbose) {
+    //   console.log(`Classpath resolves to: `);
+    // }
+
+    const srcPaths = util.srcPathsFromClasspathStrings(classpath);
+
+    opts.classpath = srcPaths;
+    lumo.addSourcePaths(srcPaths);
+  }
+
+  if (dependencies.length !== 0) {
+    const mvnPaths = util.srcPathsFromMavenDependencies(
+      dependencies,
+      localRepo,
+    );
+    opts.classpath.push(...mvnPaths);
+    lumo.addSourcePaths(mvnPaths);
+  }
+
+  if (opts.repl && !quiet) {
+    printBanner();
+  }
+
+  return startClojureScriptEngine(opts);
+}
+
+export default startCLI;

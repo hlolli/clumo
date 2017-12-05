@@ -9,7 +9,8 @@
     "unsafe-perm": true
   },
   "keywords": [
-    "csound", "lumo"
+    "csound",
+    "lumo"
   ],
   "author": "Hlöðver Sigurðsson",
   "license": "EPL-1.0",
@@ -20,7 +21,7 @@
   "homepage": "https://github.com/hlolli/clumo",
   "preferGlobal": true,
   "dependencies": {
-    "jszip": "^3.1.5",
+    "jszip": "2.6.1",
     "progress": "^2.0.0",
     "request": "^2.83.0"
   },

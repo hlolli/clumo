@@ -1,24 +1,30 @@
 {
   "name": "clumo",
   "version": "1.0.0",
-  "description": "Clojurescript for Csound Score pre-processor",
-  "main": "index.js",
-  "bin": "index.js",
+  "description": "Lumo/Clojurescript for Csound Score pre-processor",
   "scripts": {
-    "install": "node scripts/npm_install.js || nodejs scripts/npm_install.js",
-    "download": "node download_lumo.js --max_old_space_size=2000"
+    "install": "node scripts/clumo_install.js || nodejs scripts/clumo_install.js"
   },
   "config": {
     "unsafe-perm": true
   },
   "keywords": [
-    "csound"
+    "csound", "lumo"
   ],
   "author": "Hlöðver Sigurðsson",
   "license": "EPL-1.0",
-  "devDependencies": {
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hlolli/clumo.git"
+  },
+  "homepage": "https://github.com/hlolli/clumo",
+  "preferGlobal": true,
+  "dependencies": {
     "jszip": "^3.1.5",
     "progress": "^2.0.0",
     "request": "^2.83.0"
+  },
+  "bin": {
+    "clumo": "./bin/clumo.js"
   }
 }
